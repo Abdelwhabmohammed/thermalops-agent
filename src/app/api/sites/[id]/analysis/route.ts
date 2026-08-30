@@ -1,9 +1,9 @@
-// POST /api/sites/[id]/analysis — run an on-demand deep analysis:
+// run an on-demand deep analysis:
 //   { type: "satellite" | "streetview" | "heat_intelligence" }
 //
 //   satellite          → land-cover segmentation (shade/exposure context)
-//   streetview         → ground-level segmentation (Premium)
-//   heat_intelligence  → multi-dimensional PDF report (all plans, per docs)
+//   streetview         → ground-level segmentation
+//   heat_intelligence  → multi-dimensional PDF report
 //
 // GET /api/sites/[id]/analysis?type=... — latest analysis + status. A
 // Processing heat_intelligence row is self-healing: each GET re-checks the
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     body = (await req.json()) as Record<string, unknown>;
   } catch {
-    // empty body OK
+    
   }
   const type = (body.type as string) ?? 'satellite';
   if (!VALID_TYPES.includes(type)) {
@@ -251,8 +251,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 
   // Self-heal: a completed satellite analysis with no stored imagery (the
-  // live API returns imagery under varying keys). Backfill a real ESRI
-  // World Imagery tile of the exact coordinates — zero FortyGuard credits.
+  // live API returns imagery under varying keys).
   if (row.status === 'Completed' && type === 'satellite' && !row.imageBase64) {
     const site = await db.site.findUnique({ where: { id: siteId } });
     if (site) {
