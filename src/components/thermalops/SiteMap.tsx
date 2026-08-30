@@ -1,14 +1,18 @@
 'use client';
 
-// Simple dark map with risk-colored site markers.
-// Uses free Esri tiles: dark, satellite, and hybrid views.
-// Click anywhere to probe a spot, then register it when you want to track it.
+// Dark Leaflet map with risk-colored sites and quick probe actions.
+// Free Esri basemaps: Dark, Satellite, and Hybrid.
+// Dark tiles stop at z16, so we cap native zoom there; satellite/hybrid go higher.
+// Click anywhere to probe a spot and get weather, wet-bulb, and SVI.
+// Optional deep probe uses FortyGuard thermal for one credit.
+// State Watch sweeps a state, highlights elevated sentinels, and lets you promote them.
 
 import 'leaflet/dist/leaflet.css';
 import { useEffect, useRef, useState } from 'react';
-import { probeLocation, registerSite } from '@/lib/api';
-import type { ProbeResponse, Site } from '@/lib/types';
+import { fetchStates, probeLocation, registerSite, sweepState } from '@/lib/api';
+import type { ProbeResponse, SentinelReading, Site, StateInfo, StateSweepResponse } from '@/lib/types';
 import { riskColor, riskBadgeClass } from '@/lib/utils';
+import StateWatch from '@/components/thermalops/StateWatch';
 import {
   Crosshair,
   Loader2,
@@ -51,6 +55,7 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
   // closure always sees fresh data.
   const mapRef = useRef<import('leaflet').Map | null>(null);
   const markersRef = useRef<Map<number, import('leaflet').Marker>>(new Map());
+  const sweepMarkersRef = useRef<Map<string, import('leaflet').Marker>>(new Map());
   const probeMarkerRef = useRef<import('leaflet').Marker | null>(null);
   const syncRef = useRef<(() => void) | null>(null);
   const sitesRef = useRef(sites);
@@ -66,6 +71,136 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
   const probeRef = useRef(probe);
   probeRef.current = probe;
 
+  // -- State Watch ----------------------------------------------------------------
+  const [states, setStates] = useState<StateInfo[] | null>(null);
+  const [watchCode, setWatchCode] = useState<string | null>(null);
+  const [sweep, setSweep] = useState<StateSweepResponse | null>(null);
+  const [sweeping, setSweeping] = useState(false);
+  const [sweepErr, setSweepErr] = useState<string | null>(null);
+  const [registeringIds, setRegisteringIds] = useState<Set<string>>(new Set());
+  const [focusSentinelId, setFocusSentinelId] = useState<string | null>(null);
+  const sweepRef = useRef(sweep);
+  sweepRef.current = sweep;
+  const lastFlownRef = useRef<string | null>(null);
+
+  // Catalog loads once (cheap db query) — powers the state chips.
+  useEffect(() => {
+    let cancelled = false;
+    fetchStates()
+      .then((s) => {
+        if (!cancelled) setStates(s);
+      })
+      .catch(() => {
+        /* chips stay hidden; the rest of the map still works */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Map-pin → row focus highlight auto-clears.
+  useEffect(() => {
+    if (!focusSentinelId) return;
+    const t = setTimeout(() => setFocusSentinelId(null), 2600);
+    return () => clearTimeout(t);
+  }, [focusSentinelId]);
+
+  const runSweep = async (code: string, fresh = false) => {
+    setSweeping(true);
+    setSweepErr(null);
+    try {
+      const res = await sweepState(code, fresh);
+      setSweep(res);
+      // Fly to the state only when it CHANGES — a refresh shouldn't yank the view.
+      if (lastFlownRef.current !== code) {
+        lastFlownRef.current = code;
+        const map = mapRef.current;
+        if (map && res.sentinels.length > 0) {
+          const L = await import('leaflet');
+          map.flyToBounds(
+            L.latLngBounds(
+              res.sentinels.map((s) => [s.latitude, s.longitude] as [number, number]),
+            ).pad(0.35),
+            { duration: 1.1, maxZoom: 11 },
+          );
+        }
+      }
+    } catch (e) {
+      setSweepErr(String((e as Error).message || e));
+    } finally {
+      setSweeping(false);
+    }
+  };
+
+  const pickState = (code: string | null) => {
+    setWatchCode(code);
+    setSweepErr(null);
+    setSweep(null);
+    if (code) void runSweep(code);
+  };
+
+  const registerSentinel = async (s: SentinelReading) => {
+    setSweepErr(null);
+    setRegisteringIds((prev) => {
+      const n = new Set(prev);
+      n.add(s.id);
+      return n;
+    });
+    try {
+      const created = await registerSite({
+        label: s.label,
+        latitude: s.latitude,
+        longitude: s.longitude,
+        city: s.city,
+        state: watchCode ?? undefined,
+        site_type: s.site_type,
+        crew_size: s.crew_size,
+        notes: 'Registered from State Watch sweep',
+      });
+      // Optimistic flip: sentinel becomes "monitored" immediately; the solid
+      // site marker replaces the diamond once the sites SWR refresh lands.
+      setSweep((prev) =>
+        prev
+          ? {
+            ...prev,
+            sentinels: prev.sentinels.map((x) =>
+              x.id === s.id ? { ...x, monitored_site_id: created.site_id } : x,
+            ),
+            summary: { ...prev.summary, monitored: prev.summary.monitored + 1 },
+          }
+          : prev,
+      );
+      onSelectRef.current(created.site_id);
+      onSiteRegistered?.(created.site_id);
+    } catch (e) {
+      setSweepErr(String((e as Error).message || e));
+    } finally {
+      setRegisteringIds((prev) => {
+        const n = new Set(prev);
+        n.delete(s.id);
+        return n;
+      });
+    }
+  };
+
+  const registerAllElevated = async () => {
+    const targets = (sweep?.sentinels ?? []).filter(
+      (s) =>
+        s.monitored_site_id === null &&
+        (s.risk_level === 'ELEVATED' || s.risk_level === 'CRITICAL'),
+    );
+    // Sequential — each registration runs an eager census lookup + a
+    // background heatmap fetch; no need to hammer them in parallel.
+    for (const t of targets) {
+      await registerSentinel(t);
+    }
+  };
+
+  const openSentinel = (s: SentinelReading) => {
+    mapRef.current?.panTo([s.latitude, s.longitude], { animate: true });
+    setFocusSentinelId(s.id);
+  };
+
   const closeProbe = () => {
     setProbe({ phase: 'idle' });
     setProbeErr(null);
@@ -73,17 +208,19 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
     probeMarkerRef.current = null;
   };
 
+  // Run the FREE instant probe (auto — costs no credits).
   const runInstant = async (lat: number, lng: number) => {
     setProbeErr(null);
     try {
       const result = await probeLocation(lat, lng, false);
-      if (probeRef.current.phase === 'idle') return;
+      if (probeRef.current.phase === 'idle') return; // closed mid-flight
       setProbe({ phase: 'instant', lat, lng, result });
     } catch (e) {
       setProbeErr(String((e as Error).message || e));
     }
   };
 
+  // Opt-in deep probe — spends 1 FortyGuard credit on satellite thermal.
   const runDeep = async (lat: number, lng: number) => {
     const prev = probeRef.current;
     const prevResult = 'result' in prev ? prev.result : null;
@@ -168,10 +305,45 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
         markersRef.current.set(site.id, marker);
       }
 
+      // -- State Watch sweep pins (diamonds) ----------------------------------
+      // Sentinels already covered by a registered site are skipped — their
+      // solid marker above is the single source of truth.
+      sweepMarkersRef.current.forEach((m) => {
+        try { m.remove(); } catch { /* noop */ }
+      });
+      sweepMarkersRef.current.clear();
+      const sweepData = sweepRef.current;
+      if (sweepData) {
+        for (const s of sweepData.sentinels) {
+          if (s.monitored_site_id !== null) continue;
+          const color = riskColor(s.risk_level);
+          const hot = s.risk_level === 'ELEVATED' || s.risk_level === 'CRITICAL';
+          const icon = leaflet.divIcon({
+            className: 'thermalops-sweep-pin',
+            html: `<div class="sweep-pin${hot ? ' hot' : ''}" style="--c:${color}"><div class="sweep-ring"></div><div class="sweep-diamond"></div></div>`,
+            iconSize: [26, 26],
+            iconAnchor: [13, 13],
+          });
+          const sweepMarker = leaflet
+            .marker([s.latitude, s.longitude], { icon, zIndexOffset: 500 })
+            .addTo(map)
+            .bindTooltip(
+              `<strong>${escapeHtml(s.label)}</strong><br/>` +
+              `${escapeHtml(s.city)} · sweep ${s.risk_level ?? 'unknown'}<br/>` +
+              `${s.temp_c?.toFixed(1) ?? '—'}°C · WB ${s.wet_bulb_c?.toFixed(1) ?? '—'}°C · ${s.crew_size} crew` +
+              (s.error ? `<br/><span style="color:#fbbf24">${escapeHtml(s.error)}</span>` : ''),
+              { direction: 'top', offset: [0, -12] },
+            )
+            .on('click', () => setFocusSentinelId(s.id));
+          sweepMarkersRef.current.set(s.id, sweepMarker);
+        }
+      }
+
       // Fit only when the set of sites changes (new site registered) —
-      // NOT on every SWR refresh, which would yank the user's zoom.
+      // NOT on every SWR refresh, which would yank the user's zoom. While a
+      // State Watch sweep is active the view stays pinned to the state.
       const key = currentSites.map((s) => s.id).join(',');
-      if (currentSites.length > 0 && key !== fittedKeyRef.current) {
+      if (currentSites.length > 0 && key !== fittedKeyRef.current && !sweepRef.current) {
         fittedKeyRef.current = key;
         const bounds = leaflet.latLngBounds(
           currentSites.map(s => [s.latitude, s.longitude] as [number, number]),
@@ -191,9 +363,11 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
         maxZoom: 19,
         minZoom: 3,
         scrollWheelZoom: true,
-        zoomControl: true,
+        zoomControl: false, // added at topright below — top-left is State Watch turf
         attributionControl: true,
       });
+      // Zoom + layers stacked at top-right (top-left hosts the State Watch panel).
+      leaflet.control.zoom({ position: 'topright' }).addTo(map);
 
       // -- Basemaps (free Esri, no key) --------------------------------------
       const dark = leaflet.layerGroup([
@@ -256,16 +430,17 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
       mapRef.current?.remove();
       mapRef.current = null;
       markersRef.current.clear();
+      sweepMarkersRef.current.clear();
       probeMarkerRef.current = null;
       syncRef.current = null;
     };
 
   }, []);
 
-  // Sync markers when sites/selection change
+  // Sync markers when sites/selection/sweep change
   useEffect(() => {
     syncRef.current?.();
-  }, [sites, selectedSiteId]);
+  }, [sites, selectedSiteId, sweep]);
 
   const pinLat = probe.phase !== 'idle' ? probe.lat : null;
   const pinLng = probe.phase !== 'idle' ? probe.lng : null;
@@ -292,6 +467,25 @@ export default function SiteMap({ sites, selectedSiteId, onSelectSite, onSiteReg
           click the map to scout any location
         </div>
       )}
+
+      {/* State Watch — regional sentinel sweep panel */}
+      <StateWatch
+        states={states}
+        activeCode={watchCode}
+        sweep={sweep}
+        sweeping={sweeping}
+        error={sweepErr}
+        focusSentinelId={focusSentinelId}
+        registeringIds={registeringIds}
+        onPickState={pickState}
+        onRefresh={() => {
+          if (watchCode) void runSweep(watchCode, true);
+        }}
+        onRegisterSentinel={(s) => void registerSentinel(s)}
+        onRegisterAllElevated={() => void registerAllElevated()}
+        onOpenSentinel={openSentinel}
+        onSelectSite={(id) => onSelectRef.current(id)}
+      />
 
       {/* Probe card */}
       {probe.phase !== 'idle' && pinLat !== null && pinLng !== null && (
@@ -501,5 +695,27 @@ const PROBE_CSS = `
 @keyframes probe-pulse {
   0% { transform: scale(0.55); opacity: 1; }
   100% { transform: scale(1.6); opacity: 0; }
+}
+/* State Watch sweep pins — small diamonds; elevated/critical get a pulse ring */
+.thermalops-sweep-pin { background: transparent; border: none; }
+.sweep-pin { position: relative; width: 26px; height: 26px; }
+.sweep-diamond {
+  position: absolute; left: 7px; top: 7px;
+  width: 12px; height: 12px;
+  background: var(--c);
+  border: 2px solid rgba(255,255,255,0.85);
+  transform: rotate(45deg);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.sweep-ring {
+  position: absolute; inset: 2px;
+  border: 2px solid var(--c);
+  border-radius: 50%;
+  opacity: 0;
+}
+.sweep-pin.hot .sweep-ring { animation: sweep-pulse 1.6s ease-out infinite; }
+@keyframes sweep-pulse {
+  0% { transform: scale(0.5); opacity: 0.9; }
+  100% { transform: scale(1.5); opacity: 0; }
 }
 `;
