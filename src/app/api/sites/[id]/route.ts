@@ -1,5 +1,4 @@
-// GET /api/sites/[id] — single site detail. DELETE — soft-deactivate.
-// Ported from backend/routes/sites.py.
+// single site detail. DELETE — soft-deactivate.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
