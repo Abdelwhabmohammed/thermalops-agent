@@ -9,7 +9,6 @@ COPY prisma ./prisma/
 RUN npm ci --include=dev
 RUN npx prisma generate
 
-# Create public directory if it does not exist
 RUN mkdir -p /app/public
 
 COPY . .
@@ -26,6 +25,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+ENV DATABASE_URL="file:/app/db/thermalops.db"
 
 RUN apk add --no-cache libc6-compat
 
@@ -35,6 +35,7 @@ COPY --from=builder /app/package-lock.json* ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/public ./public
 
 # Create data and db directories for SQLite
@@ -42,4 +43,4 @@ RUN mkdir -p /app/db /app/data
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && (node scripts/seed-sites.mjs || true) && npm start"]
