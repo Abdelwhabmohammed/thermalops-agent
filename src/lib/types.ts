@@ -202,6 +202,53 @@ export interface ProbeResponse {
   suggested: { label: string; city: string | null; state: string | null };
 }
 
+// -- State Watch (regional sentinel sweep) --------------------------------------------
+
+export interface StateInfo {
+  code: string;
+  name: string;
+  sentinel_count: number;
+  monitored_count: number;
+}
+
+export interface SentinelReading {
+  id: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  city: string;
+  site_type: string;
+  crew_size: number;
+  temp_c: number | null;
+  humidity_pct: number | null;
+  wet_bulb_c: number | null;
+  aqi: number | null;
+  svi_pct: number | null;
+  tier: WetBulbTier | null;
+  risk_level: RiskLevel | null;
+  action: AgentAction | null;
+  composite_score: number | null;
+  source: string | null;
+  error: string | null;
+  monitored_site_id: number | null;
+}
+
+export interface StateSweepResponse {
+  state: string;
+  state_name: string;
+  swept_at: string;
+  cached: boolean;
+  sentinels: SentinelReading[];
+  summary: {
+    total: number;
+    monitored: number;
+    elevated: number;
+    critical: number;
+    crews_exposed: number;
+    avg_wet_bulb_c: number | null;
+  };
+}
+
 // -- Portfolio summary -------------------------------------------------------------
 
 export interface SummaryResponse {
