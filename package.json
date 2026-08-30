@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "postinstall": "prisma generate",
-    "build": "next build",
     "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
     "lint": "eslint .",
+    "postinstall": "prisma generate",
     "download-svi": "node scripts/download-svi.mjs",
     "seed": "node scripts/seed-sites.mjs",
     "db:push": "prisma db push --accept-data-loss",
