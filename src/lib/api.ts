@@ -1,5 +1,4 @@
 // Frontend API client — same-origin calls to the Next.js API routes.
-// (No proxy rewrites needed anymore: frontend + API live in one app.)
 
 import type {
   Alert,
@@ -9,8 +8,11 @@ import type {
   Health,
   PollResult,
   ProbeResponse,
+  SentinelReading,
   Site,
   SiteStatus,
+  StateInfo,
+  StateSweepResponse,
   SummaryResponse,
 } from './types';
 
@@ -149,6 +151,29 @@ export async function probeLocation(
     throw new Error((body as { error?: string }).error || `probe ${r.status}`);
   }
   return body as ProbeResponse;
+}
+
+// -- State Watch (regional sentinel sweep) -------------------------------------------
+
+export async function fetchStates(): Promise<StateInfo[]> {
+  const r = await fetch(`${API_BASE}/states`, fetchOpts);
+  if (!r.ok) throw new Error(`states ${r.status}`);
+  const body = await r.json();
+  return body.states as StateInfo[];
+}
+
+export async function sweepState(state: string, fresh = false): Promise<StateSweepResponse> {
+  const r = await fetch(`${API_BASE}/states/sweep`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state, fresh }),
+    cache: 'no-store' as RequestCache,
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((body as { error?: string }).error || `sweep ${r.status}`);
+  }
+  return body as StateSweepResponse;
 }
 
 // -- Portfolio summary -------------------------------------------------------------------
