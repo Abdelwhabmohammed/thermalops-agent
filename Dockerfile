@@ -7,7 +7,7 @@ RUN apk add --no-cache libc6-compat
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma/
 
-RUN npm ci
+RUN npm ci --include=dev
 RUN npx prisma generate
 
 COPY . .
