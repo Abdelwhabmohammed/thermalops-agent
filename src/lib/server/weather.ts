@@ -1,6 +1,22 @@
-// Satellite land-cover and Heat Intelligence report cards for a site.
 
 const NWS_HEADERS = { 'User-Agent': 'ThermalOps-Agent/1.0 (heat-safety monitoring)' };
+
+/**
+ * Stull (2011) wet-bulb approximation from dry-bulb temp (°C) + RH (%).
+ * Valid for RH 5–99%, −20…50 °C — RMS error ~0.3 °C. Labeled "estimated"
+ * in the UI; registered sites switch to FortyGuard env_params wet-bulb.
+ *
+ * Shared by the map probe (single pin) and the state-watch sentinel sweep.
+ */
+export function stullWetBulb(tempC: number, rh: number): number {
+    return (
+        tempC * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) +
+        Math.atan(tempC + rh) -
+        Math.atan(rh - 1.676331) +
+        0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) -
+        4.686035
+    );
+}
 
 export interface CurrentConditions {
     tempC: number | null;
