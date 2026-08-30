@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "postinstall": "prisma generate",
     "build": "next build",
-    "start": "next start -p 3000",
+    "dev": "next dev -p 3000",
     "lint": "eslint .",
     "download-svi": "node scripts/download-svi.mjs",
     "seed": "node scripts/seed-sites.mjs",
