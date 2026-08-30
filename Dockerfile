@@ -1,7 +1,6 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Install dependencies needed for node-gyp / native modules if any
 RUN apk add --no-cache libc6-compat
 
 COPY package.json package-lock.json* ./
@@ -9,6 +8,9 @@ COPY prisma ./prisma/
 
 RUN npm ci --include=dev
 RUN npx prisma generate
+
+# Create public directory if it does not exist
+RUN mkdir -p /app/public
 
 COPY . .
 
@@ -32,9 +34,8 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/package-lock.json* ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/public ./public
 
 # Create data and db directories for SQLite
 RUN mkdir -p /app/db /app/data
