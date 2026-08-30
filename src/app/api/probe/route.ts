@@ -1,15 +1,27 @@
-// Scout conditions for any map coordinate (instant weather or deep satellite thermal).
+// POST /api/probe — scout any point on the map before registering it.
+//
+// Two tiers (the commercial "try before you buy" funnel):
+//   instant (default, FREE — zero FortyGuard credits):
+//     Open-Meteo current temp + humidity → Stull (2011) wet-bulb estimate
+//     + Open-Meteo Air-Quality US AQI → same NIOSH/OSHA risk engine as
+//     monitored sites (risk-scorer.assess) + census SVI percentile.
+//   deep (deep: true — spends 1 FortyGuard credit):
+//     Real satellite-derived surface tile temperature from /v1/heatmap for
+//     the exact 200m AOI around the pin.
+//
+// Both tiers return a suggested site label/city/state via the census
+// geocoder + SVI CSV so "Register & monitor" is one click.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { FortyGuardClient, makeSmallAoi, extractTileTemperature } from '@/lib/server/fortyguard';
 import { assess } from '@/lib/server/risk-scorer';
 import { sviLookup } from '@/lib/server/svi';
-import { fetchCurrentConditions } from '@/lib/server/weather';
+import { fetchCurrentConditions, stullWetBulb } from '@/lib/server/weather';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
-// US geographic bounds for service coverage
+// Same continental-US bounds as site registration (FortyGuard coverage).
 const US_LAT_MIN = 24.0, US_LAT_MAX = 49.5, US_LNG_MIN = -125.0, US_LNG_MAX = -66.5;
 
 const STATE_FIPS: Record<string, string> = {
@@ -22,17 +34,6 @@ const STATE_FIPS: Record<string, string> = {
     '47': 'TN', '48': 'TX', '49': 'UT', '50': 'VT', '51': 'VA', '53': 'WA', '54': 'WV',
     '55': 'WI', '56': 'WY', '72': 'PR',
 };
-
-// Stull wet-bulb estimation from temp and relative humidity.
-function stullWetBulb(tempC: number, rh: number): number {
-    return (
-        tempC * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) +
-        Math.atan(tempC + rh) -
-        Math.atan(rh - 1.676331) +
-        0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) -
-        4.686035
-    );
-}
 
 export async function POST(req: NextRequest) {
     let body: Record<string, unknown>;
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // SVI and location lookup
+    // SVI + reverse geocode (soft-fail — works without the CSV too).
     let svi: {
         county: string | null;
         tract: string | null;
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
         console.warn(`[probe] SVI lookup failed: ${String(e).slice(0, 120)}`);
     }
 
-    // Instant weather conditions
+    // -- Instant tier (free) ----------------------------------------------------------
     const wx = await fetchCurrentConditions(latitude, longitude);
     let instant: Record<string, unknown> | null = null;
     if (wx.tempC !== null) {
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
         };
     }
 
-    // Optional FortyGuard satellite thermal probe
+    // -- Deep tier (FortyGuard satellite thermal — 1 credit) ---------------------------
     let deepResult: Record<string, unknown> | null = null;
     if (deep) {
         try {
@@ -130,7 +131,7 @@ export async function POST(req: NextRequest) {
         }
     }
 
-    // Suggested site name and location
+    // Suggested registration fields.
     const city = svi?.county ? svi.county.replace(/ County$/i, '') : null;
     const state = svi?.stateCode ?? null;
     const label =
