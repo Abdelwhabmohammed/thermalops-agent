@@ -1,0 +1,156 @@
+// ThermalOps Agent — Prisma schema (SQLite)
+// Ported 1:1 from the Flask/SQLite version. Five tables:
+//   sites         — registered outdoor worksites
+//   svi_cache     — CDC SVI scores per site (census tract level)
+//   polling_state — cached heatmap temp + latest decision per site
+//   events        — every agent cycle's readings + decision (audit trail)
+//   alerts        — emitted worker-safety alerts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Site {
+  id        Int      @id @default(autoincrement())
+  label     String
+  latitude  Float
+  longitude Float
+  city      String?
+  state     String?
+  country   String   @default("US")
+  siteType  String   @default("construction") @map("site_type")
+  crewSize  Int      @default(0) @map("crew_size")
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  isActive  Boolean  @default(true) @map("is_active")
+
+  svi     SviCache?
+  polling PollingState?
+  events  Event[]
+  alerts  Alert[]
+  forecasts   Forecast[]
+  analyses    SiteAnalysis[]
+
+  @@map("sites")
+}
+
+model SviCache {
+  siteId     Int     @id @map("site_id")
+  fipsTract  String  @map("fips_tract") // 11-digit census tract FIPS
+  countyName String? @map("county_name")
+  tractName  String? @map("tract_name")
+  rplThemes  Float?  @map("rpl_themes") // overall SVI ranking 0-1
+  rplTheme1  Float?  @map("rpl_theme1") // socioeconomic
+  rplTheme2  Float?  @map("rpl_theme2") // household composition & disability
+  rplTheme3  Float?  @map("rpl_theme3") // minority status & language
+  rplTheme4  Float?  @map("rpl_theme4") // housing type & transportation
+  fetchedAt  DateTime @default(now()) @map("fetched_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@map("svi_cache")
+}
+
+model PollingState {
+  siteId                Int     @id @map("site_id")
+  lastHeatmapActivityId String? @map("last_heatmap_activity_id")
+  lastHeatmapTempC      Float?  @map("last_heatmap_temp_c")
+  lastHeatmapAt         DateTime? @map("last_heatmap_at")
+  lastEnvParamsAt       DateTime? @map("last_env_params_at")
+  lastDecisionAction    String? @map("last_decision_action")
+  lastDecisionRisk      String? @map("last_decision_risk")
+  lastDecisionConfidence Float? @map("last_decision_confidence")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@map("polling_state")
+}
+
+model Event {
+  id           Int      @id @default(autoincrement())
+  siteId       Int      @map("site_id")
+  polledAt     DateTime @default(now()) @map("polled_at")
+  rawEnvParams String?  @map("raw_env_params") // JSON blob of /v1/env_params result
+  rawHeatmap   String?  @map("raw_heatmap")    // JSON blob of latest heatmap tile data
+  rawSvi       String?  @map("raw_svi")        // JSON blob of SVI scores
+  tempC        Float?   @map("temp_c")
+  wetBulbC     Float?   @map("wet_bulb_c")
+  aqi          Float?
+  solarGhi     Float?   @map("solar_ghi")
+  heatIndexC   Float?   @map("heat_index_c")   // "feels like" °C
+  humidityPct  Float?   @map("humidity_pct")   // relative humidity %
+  riskLevel    String?  @map("risk_level") // LOW | ELEVATED | CRITICAL
+  action       String?  // clear | advisory | stop_work_order | emergency_escalate
+  agentTier    String?  @map("agent_tier") // rule | flash | pro
+  explanation  String?
+  confidence   Float?
+  llmResponse  String?  @map("llm_response") // full LLM JSON for audit
+
+  site   Site    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  alerts Alert[]
+
+  @@index([siteId, polledAt])
+  @@map("events")
+}
+
+model Alert {
+  id             Int      @id @default(autoincrement())
+  siteId         Int      @map("site_id")
+  eventId        Int?     @map("event_id")
+  severity       String // ELEVATED | CRITICAL
+  action         String
+  title          String
+  message        String
+  createdAt      DateTime @default(now()) @map("created_at")
+  isAcknowledged Boolean  @default(false) @map("is_acknowledged")
+  acknowledgedAt DateTime? @map("acknowledged_at")
+
+  site  Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  event Event? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([siteId])
+  @@map("alerts")
+}
+
+// Daily 24-hour heat curve per site — captured FREE from every env_params
+// poll (the API returns the full-day time series). Powers the shift planner
+// and the ROI / cost-of-inaction model.
+model Forecast {
+  id          Int      @id @default(autoincrement())
+  siteId      Int      @map("site_id")
+  date        String   // YYYY-MM-DD (site-local date of the series)
+  seriesJson  String   @map("series_json") // [{hour, timestamp, wetBulbC, aqi, heatIndexC, humidityPct, tempC}]
+  generatedAt DateTime @default(now()) @map("generated_at")
+  source      String   @default("env_params") // env_params | demo
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, date])
+  @@map("forecasts")
+}
+
+// On-demand deep analyses (Premium FG endpoints + Heat Intelligence reports).
+model SiteAnalysis {
+  id          Int      @id @default(autoincrement())
+  siteId      Int      @map("site_id")
+  type        String   // satellite | streetview | heat_intelligence
+  status      String   @default("Processing") // Processing | Completed | Failed
+  activityId  String?  @map("activity_id")
+  payloadJson String?  @map("payload_json")   // segmentation %, report meta, …
+  imageBase64 String?  @map("image_base64")   // renderable data-URL image
+  pdfBase64   String?  @map("pdf_base64")     // heat-intelligence report PDF
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, type])
+  @@map("site_analyses")
+}
