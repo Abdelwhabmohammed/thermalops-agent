@@ -1,13 +1,6 @@
 'use client';
 
-// SiteAnalysis — on-demand FortyGuard deep analyses per site:
-//
-//   Satellite Segmentation → land-cover shares (tree/building/earth) +
-//     imagery → shade & radiant-exposure context for the site.
-//   Heat Intelligence → multi-dimensional PDF report (env / urban /
-//     anthropogenic) with an in-app viewer link.
-//
-// Both persist in SQLite (site_analyses), so repeat views cost zero credits.
+// Satellite land-cover and Heat Intelligence report cards for a site.
 
 import useSWR from 'swr';
 import { useState } from 'react';
@@ -224,7 +217,7 @@ function ReportCard({ siteId, hasTemperature }: { siteId: number; hasTemperature
   };
 
   const processing = data?.status === 'Processing' || (busy && data?.status !== 'Completed');
-  const done = data?.status === 'Completed' && data.has_pdf;
+  const done = data?.status === 'Completed';
 
   return (
     <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 p-3">

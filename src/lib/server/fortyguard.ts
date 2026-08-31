@@ -387,11 +387,6 @@ export class FortyGuardClient {
     return this.callHeatIntelligenceFromActivity(submit.activityId);
   }
 
-  /**
-   * Poll an already-submitted Heat Intelligence activity until the
-   * download_link appears. Used by both the background completer and the
-   * self-healing GET status route.
-   */
   async callHeatIntelligenceFromActivity(
     activityId: string,
   ): Promise<{ downloadLink: string | null; result: Record<string, unknown> }> {
@@ -399,8 +394,37 @@ export class FortyGuardClient {
       maxSeconds: Math.min(900, config.fortyguard.maxPollSeconds),
       intervalSeconds: 10,
     });
-    const link = (poll.result?.download_link as string | undefined) ?? null;
-    return { downloadLink: link, result: poll.result ?? {} };
+    const r = (poll.result ?? {}) as Record<string, unknown>;
+    let link: string | null =
+      (r.download_link as string) ??
+      (r.downloadLink as string) ??
+      (r.pdf_url as string) ??
+      (r.pdfUrl as string) ??
+      (r.report_url as string) ??
+      (r.file_url as string) ??
+      (r.url as string) ??
+      (r.link as string) ??
+      null;
+
+    if (!link && typeof r === 'object') {
+      const findUrl = (obj: unknown, depth = 0): string | null => {
+        if (!obj || depth > 5) return null;
+        if (typeof obj === 'string') {
+          if ((obj.startsWith('http://') || obj.startsWith('https://')) && (obj.includes('.pdf') || obj.includes('download') || obj.includes('report'))) {
+            return obj;
+          }
+        } else if (typeof obj === 'object') {
+          for (const v of Object.values(obj as Record<string, unknown>)) {
+            const found = findUrl(v, depth + 1);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      link = findUrl(r);
+    }
+
+    return { downloadLink: link, result: r };
   }
 
   /** Download the temporary pre-signed PDF from a completed report. */

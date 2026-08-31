@@ -3,6 +3,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
+import { sviLookup } from '@/lib/server/svi';
+
 export const dynamic = 'force-dynamic';
 
 type Params = { params: Promise<{ id: string }> };
@@ -19,6 +21,22 @@ export async function GET(_req: NextRequest, { params }: Params) {
     include: { svi: true, polling: true },
   });
   if (!site) return NextResponse.json({ error: 'site not found' }, { status: 404 });
+
+  // Self-heal: populate SVI if not yet cached
+  if (!site.svi) {
+    try {
+      const svi = await sviLookup(site.latitude, site.longitude);
+      if (svi) {
+        site.svi = await db.sviCache.upsert({
+          where: { siteId: site.id },
+          create: { siteId: site.id, ...svi },
+          update: { ...svi },
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const events = await db.event.findMany({
     where: { siteId },

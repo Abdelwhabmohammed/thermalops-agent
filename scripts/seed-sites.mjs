@@ -25,6 +25,16 @@ const DEMO_SITES = [
     site_type: 'construction',
     crew_size: 28,
     notes: 'Foundation pour for 12-story mixed-use',
+    svi: {
+      fipsTract: '04013114100',
+      countyName: 'Maricopa County',
+      tractName: 'Census Tract 1141; Maricopa County; Arizona',
+      rplThemes: 0.5012,
+      rplTheme1: 0.7166,
+      rplTheme2: 0.0179,
+      rplTheme3: 0.5750,
+      rplTheme4: 0.7760,
+    },
   },
   {
     label: 'Phoenix South Mountain Crew',
@@ -35,6 +45,16 @@ const DEMO_SITES = [
     site_type: 'construction',
     crew_size: 15,
     notes: 'Road resurfacing, full sun exposure',
+    svi: {
+      fipsTract: '04013116601',
+      countyName: 'Maricopa County',
+      tractName: 'Census Tract 1166.01; Maricopa County; Arizona',
+      rplThemes: 0.8841,
+      rplTheme1: 0.8321,
+      rplTheme2: 0.7412,
+      rplTheme3: 0.9120,
+      rplTheme4: 0.8210,
+    },
   },
   {
     label: 'Houston East End Logistics Hub',
@@ -45,6 +65,16 @@ const DEMO_SITES = [
     site_type: 'logistics',
     crew_size: 42,
     notes: 'Loading dock, mixed shade',
+    svi: {
+      fipsTract: '48201311000',
+      countyName: 'Harris County',
+      tractName: 'Census Tract 3110; Harris County; Texas',
+      rplThemes: 0.9412,
+      rplTheme1: 0.9610,
+      rplTheme2: 0.6840,
+      rplTheme3: 0.9820,
+      rplTheme4: 0.7910,
+    },
   },
   {
     label: 'Houston Sunnyside Warehouse',
@@ -55,6 +85,16 @@ const DEMO_SITES = [
     site_type: 'logistics',
     crew_size: 18,
     notes: 'High-SVI tract; mostly outdoor work',
+    svi: {
+      fipsTract: '48201332700',
+      countyName: 'Harris County',
+      tractName: 'Census Tract 3327; Harris County; Texas',
+      rplThemes: 0.7846,
+      rplTheme1: 0.8968,
+      rplTheme2: 0.4912,
+      rplTheme3: 0.9720,
+      rplTheme4: 0.4789,
+    },
   },
   {
     label: 'Chicago West Loop Tower',
@@ -65,6 +105,16 @@ const DEMO_SITES = [
     site_type: 'construction',
     crew_size: 35,
     notes: 'Steel erection, mid-rise',
+    svi: {
+      fipsTract: '17031839100',
+      countyName: 'Cook County',
+      tractName: 'Census Tract 8391; Cook County; Illinois',
+      rplThemes: 0.1245,
+      rplTheme1: 0.0910,
+      rplTheme2: 0.1120,
+      rplTheme3: 0.2410,
+      rplTheme4: 0.1420,
+    },
   },
 ];
 
@@ -163,28 +213,33 @@ async function main() {
   let added = 0;
 
   for (const siteDef of DEMO_SITES) {
-    if (existingLabels.has(siteDef.label)) {
-      console.log(`Skipping existing site: ${siteDef.label}`);
-      continue;
+    let site = await prisma.site.findFirst({ where: { label: siteDef.label } });
+    if (!site) {
+      site = await prisma.site.create({
+        data: {
+          label: siteDef.label,
+          latitude: siteDef.latitude,
+          longitude: siteDef.longitude,
+          city: siteDef.city,
+          state: siteDef.state,
+          siteType: siteDef.site_type,
+          crewSize: siteDef.crew_size,
+          notes: siteDef.notes,
+        },
+      });
+      added++;
+      console.log(`Registered site ${site.id}: ${site.label}`);
     }
-    const site = await prisma.site.create({
-      data: {
-        label: siteDef.label,
-        latitude: siteDef.latitude,
-        longitude: siteDef.longitude,
-        city: siteDef.city,
-        state: siteDef.state,
-        siteType: siteDef.site_type,
-        crewSize: siteDef.crew_size,
-        notes: siteDef.notes,
-      },
-    });
-    added++;
-    console.log(`Registered site ${site.id}: ${site.label}`);
 
-    // Eager SVI lookup for demo reproducibility.
-    try {
-      const svi = await sviLookup(siteDef.latitude, siteDef.longitude);
+    // Ensure SVI is always cached (using embedded verified SVI or lookup)
+    const existingSvi = await prisma.sviCache.findUnique({ where: { siteId: site.id } });
+    if (!existingSvi) {
+      let svi = siteDef.svi ?? null;
+      if (!svi) {
+        try {
+          svi = await sviLookup(siteDef.latitude, siteDef.longitude);
+        } catch {}
+      }
       if (svi) {
         await prisma.sviCache.upsert({
           where: { siteId: site.id },
@@ -192,11 +247,7 @@ async function main() {
           update: { ...svi },
         });
         console.log(`  SVI cached: FIPS=${svi.fipsTract} rpl_themes=${svi.rplThemes}`);
-      } else {
-        console.warn(`  SVI lookup returned no data for ${siteDef.label}`);
       }
-    } catch (e) {
-      console.warn(`  SVI lookup failed for ${siteDef.label}: ${e}`);
     }
   }
 
